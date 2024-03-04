@@ -1,0 +1,111 @@
+<?php
+/*
+Plugin Name: WPCM URL OG
+Description: Este plugin exibe miniaturas nas postagens e pega a primeira imagem inserida dentro do post, caso não haja uma imagem destacada. Além disso, permite o upload de um logo personalizado que é exibido se a URL compartilhada incluir "http://" ou "https://". O logo é automaticamente convertido para logo.png e salvo na pasta de uploads.
+Version: 1.2
+Author: Daniel Oliveira da Paixão
+*/
+
+// Impedir acesso direto ao arquivo
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+add_theme_support('post-thumbnails');
+
+function wpcm_get_first_image_in_post_content($post_id) {
+    $post = get_post($post_id);
+    $content = $post->post_content;
+    $first_image = '';
+
+    preg_match_all('/<img.+src=[\'"]([^\'"]+)[\'"].*>/i', $content, $matches);
+    if (isset($matches[1][0])) {
+        $first_image = $matches[1][0];
+    }
+
+    return $first_image;
+}
+
+function wpcm_set_post_thumbnail_from_content($post_id) {
+    if (!has_post_thumbnail($post_id)) {
+        $first_image = wpcm_get_first_image_in_post_content($post_id);
+        if (!empty($first_image)) {
+            $attachment_id = attachment_url_to_postid($first_image);
+            if ($attachment_id) {
+                set_post_thumbnail($post_id, $attachment_id);
+            }
+        }
+    }
+}
+
+function wpcm_set_post_thumbnail_action($post_id) {
+    if ((defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) || wp_is_post_revision($post_id) || !current_user_can('edit_post', $post_id)) {
+        return;
+    }
+    wpcm_set_post_thumbnail_from_content($post_id);
+}
+add_action('save_post', 'wpcm_set_post_thumbnail_action');
+
+function wpcm_display_logo_if_shared_url($content) {
+    $upload_dir = wp_upload_dir();
+    $logo_url = get_option('wpcm_logo', $upload_dir['baseurl'] . '/logo.png');
+
+    if ((strpos($content, 'http://') !== false || strpos($content, 'https://') !== false) && file_exists($upload_dir['basedir'] . '/logo.png')) {
+        $content .= '<img src="' . esc_url($logo_url) . '" alt="Logo">';
+    }
+    return $content;
+}
+add_filter('the_content', 'wpcm_display_logo_if_shared_url');
+
+function wpcm_admin_menu_option() {
+    add_menu_page('WPCM Logo Settings', 'WPCM Logo', 'manage_options', 'wpcm-logo-settings', 'wpcm_logo_settings_page', null, 99);
+}
+add_action('admin_menu', 'wpcm_admin_menu_option');
+
+function wpcm_logo_settings_page() {
+    ?>
+    <div class="wrap">
+        <h2>WPCM Logo Settings</h2>
+        <form method="post" action="options.php" enctype="multipart/form-data">
+            <?php
+            settings_fields('wpcm-settings-group');
+            do_settings_sections('wpcm-settings-group');
+            ?>
+            <input type="file" name="wpcm_logo_upload" />
+            <?php submit_button('Upload Logo'); ?>
+        </form>
+    </div>
+    <?php
+}
+
+function wpcm_register_settings() {
+    register_setting('wpcm-settings-group', 'wpcm_logo', 'wpcm_handle_logo_upload');
+}
+add_action('admin_init', 'wpcm_register_settings');
+
+function wpcm_handle_logo_upload($option) {
+    if (!empty($_FILES['wpcm_logo_upload']['tmp_name'])) {
+        require_once(ABSPATH . 'wp-admin/includes/file.php');
+        $uploadedfile = $_FILES['wpcm_logo_upload'];
+        $upload_overrides = array('test_form' => false);
+        $movefile = wp_handle_upload($uploadedfile, $upload_overrides);
+
+        if ($movefile && !isset($movefile['error'])) {
+            $file_path = $movefile['file'];
+            $wp_upload_dir = wp_upload_dir();
+            $logo_path = $wp_upload_dir['basedir'] . '/logo.png';
+
+            if (!in_array(strtolower(pathinfo($file_path, PATHINFO_EXTENSION)), ['png'])) {
+                $image = wp_get_image_editor($file_path);
+                if (!is_wp_error($image)) {
+                    $image->save($logo_path, 'image/png');
+                    unlink($file_path);
+                }
+            } else {
+                rename($file_path, $logo_path);
+            }
+            update_option('wpcm_logo', $wp_upload_dir['baseurl'] . '/logo.png');
+        }
+    }
+    return get_option('wpcm_logo');
+}
